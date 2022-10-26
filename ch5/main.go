@@ -15,11 +15,12 @@ var (
 )
 
 type config struct {
-	ext  string
-	size int64
-	list bool
-	del  bool
-	wLog io.Writer
+	ext     string
+	size    int64
+	list    bool
+	del     bool
+	wLog    io.Writer
+	archive string
 }
 
 func main() {
@@ -29,6 +30,7 @@ func main() {
 	size := flag.Int64("size", 0, "min file size")
 	del := flag.Bool("del", false, "delete files")
 	logFile := flag.String("log", "", "log deletes to this file")
+	archive := flag.String("archive", "", "archive directory")
 
 	flag.Parse()
 
@@ -42,11 +44,12 @@ func main() {
 	}
 
 	c := config{
-		ext:  *ext,
-		size: *size,
-		list: *list,
-		del:  *del,
-		wLog: f,
+		ext:     *ext,
+		size:    *size,
+		list:    *list,
+		del:     *del,
+		wLog:    f,
+		archive: *archive,
 	}
 
 	if err := run(*root, os.Stdout, c); err != nil {
@@ -70,6 +73,12 @@ func run(root string, out io.Writer, cfg config) error {
 
 			if cfg.list {
 				return listFile(path, out)
+			}
+
+			if cfg.archive != "" {
+				if err := archiveFile(cfg.archive, root, path); err != nil {
+					return err
+				}
 			}
 
 			if cfg.del {
