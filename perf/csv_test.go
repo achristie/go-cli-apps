@@ -22,7 +22,7 @@ func TestOperations(t *testing.T) {
 		op   statsFunc
 		exp  []float64
 	}{
-		{"Sum", sum, []float64{300, 85.297, -30, 436}},
+		{"Sum", sum, []float64{300, 85.927, -30, 436}},
 		{"Avg", avg, []float64{37.5, 6.609769230769231, -15, 72.666666666666666}},
 	}
 

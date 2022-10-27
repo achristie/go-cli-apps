@@ -1,0 +1,6 @@
+goos: darwin
+goarch: arm64
+pkg: achristie.net/perf
+BenchmarkRun-8   	      10	  65349888 ns/op	214892060 B/op	 2527075 allocs/op
+PASS
+ok  	achristie.net/perf	0.866s
