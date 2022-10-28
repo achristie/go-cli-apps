@@ -5,7 +5,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
+
+type executer interface {
+	execute() (string, error)
+}
 
 func main() {
 	proj := flag.String("p", "", "Project directory")
@@ -22,20 +29,7 @@ func run(proj string, out io.Writer) error {
 		return fmt.Errorf("project directory is required: %w", ErrValidation)
 	}
 
-	// args := []string{"build", ".", "errors"}
-
-	// cmd := exec.Command("go", args...)
-
-	// cmd.Dir = proj
-
-	// if err := cmd.Run(); err != nil {
-	// 	return &stepErr{step: "go build", msg: "go build failed", cause: err}
-	// }
-
-	// _, err := fmt.Fprintln(out, "Go Build: SUCCESS")
-	// return err
-
-	pipeline := make([]step, 1)
+	pipeline := make([]executer, 4)
 
 	pipeline[0] = newStep(
 		"go build",
@@ -45,17 +39,64 @@ func run(proj string, out io.Writer) error {
 		[]string{"build", ".", "errors"},
 	)
 
-	for _, s := range pipeline {
-		msg, err := s.execute()
-		if err != nil {
-			return err
-		}
+	pipeline[1] = newStep(
+		"go test",
+		"go",
+		"Go Test: SUCCESS",
+		proj,
+		[]string{"test", "-v"},
+	)
 
-		_, err = fmt.Fprintln(out, msg)
-		if err != nil {
+	pipeline[2] = newExceptionStep(
+		"go fmt",
+		"gofmt",
+		"Gofmt: SUCCESS",
+		proj,
+		[]string{"-l", "."},
+	)
+
+	pipeline[3] = newTimeoutStep(
+		"git push",
+		"git",
+		"Git Push: SUCCESS",
+		proj,
+		[]string{"push", "origin", "master"},
+		10*time.Second,
+	)
+
+	sig := make(chan os.Signal, 1)
+	errCh := make(chan error)
+	done := make(chan struct{})
+
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		for _, s := range pipeline {
+			msg, err := s.execute()
+			if err != nil {
+				errCh <- err
+				return
+			}
+
+			_, err = fmt.Fprintln(out, msg)
+			if err != nil {
+				errCh <- err
+				return
+			}
+		}
+		close(done)
+	}()
+
+	for {
+		select {
+		case rec := <-sig:
+			signal.Stop(sig)
+			return fmt.Errorf("%s: Exiting: %w", rec, ErrSignal)
+		case err := <-errCh:
 			return err
+		case <-done:
+			return nil
 		}
 	}
 
-	return nil
 }

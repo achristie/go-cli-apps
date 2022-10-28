@@ -2,23 +2,55 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
+	"io/ioutil"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestRun(t *testing.T) {
+	_, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not installed. Skipping test")
+	}
 	var tests = []struct {
-		name   string
-		proj   string
-		out    string
-		expErr error
+		name     string
+		proj     string
+		out      string
+		expErr   error
+		setupGit bool
+		mockCmd  func(ctx context.Context, name string, arg ...string) *exec.Cmd
 	}{
-		{name: "success", proj: "./testdata/tool/", out: "Go Build: SUCCESS\n", expErr: nil},
-		{name: "fail", proj: "./testdata/toolErr/", out: "", expErr: &stepErr{step: "go build"}},
+		{name: "success", proj: "./testdata/tool/", out: "Go Build: SUCCESS\nGo Test: SUCCESS\nGofmt: SUCCESS\nGit Push: SUCCESS\n", expErr: nil, setupGit: true, mockCmd: nil},
+		{name: "successMock", proj: "./testdata/tool/", out: "Go Build: SUCCESS\nGo Test: SUCCESS\nGofmt: SUCCESS\nGit Push: SUCCESS\n", expErr: nil, setupGit: false, mockCmd: mockCmdContext},
+		{name: "fail", proj: "./testdata/toolErr/", out: "", expErr: &stepErr{step: "go build"}, setupGit: false, mockCmd: nil},
+		{name: "failFormat", proj: "./testdata/toolFmtErr", out: "", expErr: &stepErr{step: "go fmt"}, setupGit: false},
+		{name: "failTimeout", proj: "./testdata/tool", out: "", expErr: context.DeadlineExceeded, setupGit: false, mockCmd: mockCmdTimeout},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.setupGit {
+				_, err := exec.LookPath("git")
+				if err != nil {
+					t.Skip("Git not installed. Skipping test.")
+				}
+
+				cleanup := setupGit(t, tt.proj)
+				defer cleanup()
+			}
+
+			if tt.mockCmd != nil {
+				command = tt.mockCmd
+			}
+
 			var out bytes.Buffer
 			err := run(tt.proj, &out)
 
@@ -38,6 +70,150 @@ func TestRun(t *testing.T) {
 
 			if out.String() != tt.out {
 				t.Errorf("Expected output: %q. Got %q", tt.out, out.String())
+			}
+		})
+	}
+}
+
+func setupGit(t *testing.T, proj string) func() {
+	t.Helper()
+
+	tempDir, err := os.MkdirTemp("", "gocitest")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	projPath, err := filepath.Abs(proj)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	remoteURI := fmt.Sprintf("file://%s", tempDir)
+
+	var gitCmdList = []struct {
+		args []string
+		dir  string
+		env  []string
+	}{
+		{[]string{"init", "--bare"}, tempDir, nil},
+		{[]string{"init"}, projPath, nil},
+		{[]string{"remote", "add", "origin", remoteURI}, projPath, nil},
+		{[]string{"add", "."}, projPath, nil},
+		{[]string{"commit", "-m", "test"}, projPath, []string{
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@example.com",
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@example.com",
+		}},
+	}
+
+	for _, g := range gitCmdList {
+		gitCmd := exec.Command("git", g.args...)
+
+		gitCmd.Dir = g.dir
+
+		if g.env != nil {
+			gitCmd.Env = append(os.Environ(), g.env...)
+		}
+
+		if err := gitCmd.Run(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	return func() {
+		os.RemoveAll(tempDir)
+		os.RemoveAll(filepath.Join(projPath, ".git"))
+	}
+}
+
+func mockCmdContext(ctx context.Context, exe string, args ...string) *exec.Cmd {
+	cs := []string{"-test.run=TestHelperProcess"}
+	cs = append(cs, exe)
+	cs = append(cs, args...)
+
+	cmd := exec.CommandContext(ctx, os.Args[0], cs...)
+	cmd.Env = []string{"GO_WANT_HELPER_PROCESS=1"}
+	return cmd
+}
+
+func mockCmdTimeout(ctx context.Context, exe string, args ...string) *exec.Cmd {
+	cmd := mockCmdContext(ctx, exe, args...)
+	cmd.Env = append(cmd.Env, "GO_HELPER_TIMEOUT=1")
+	return cmd
+}
+
+func TestHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
+		return
+	}
+
+	if os.Getenv("GO_HELPER_TIMEOUT") == "1" {
+		time.Sleep(15 * time.Second)
+	}
+
+	if os.Args[2] == "git" {
+		fmt.Fprintln(os.Stdout, "Everything up-to-date")
+		os.Exit(0)
+	}
+
+	os.Exit(1)
+}
+
+func TestRunKill(t *testing.T) {
+	var tests = []struct {
+		name   string
+		proj   string
+		sig    syscall.Signal
+		expErr error
+	}{
+		{"SIGINT", "./testdata/tool", syscall.SIGINT, ErrSignal},
+		{"SIGTERM", "./testdata/tool", syscall.SIGTERM, ErrSignal},
+		{"SIGQUIT", "./testdata/tool", syscall.SIGQUIT, nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			command = mockCmdTimeout
+			errCh := make(chan error)
+			ignSigCh := make(chan os.Signal, 1)
+			expSigCh := make(chan os.Signal, 1)
+
+			signal.Notify(ignSigCh, syscall.SIGQUIT)
+			defer signal.Stop(ignSigCh)
+
+			signal.Notify(expSigCh, tt.sig)
+			defer signal.Stop(expSigCh)
+
+			go func() {
+				errCh <- run(tt.proj, ioutil.Discard)
+			}()
+
+			go func() {
+				time.Sleep(2 * time.Second)
+				syscall.Kill(syscall.Getpid(), tt.sig)
+			}()
+
+			select {
+			case err := <-errCh:
+				if err == nil {
+					t.Errorf("Expected error. Got 'nil' instead.")
+					return
+				}
+
+				if !errors.Is(err, tt.expErr) {
+					t.Errorf("Expected error: %q. got %q", tt.expErr, err)
+				}
+				select {
+				case rec := <-expSigCh:
+					if rec != tt.sig {
+						t.Errorf("Expected signal %q, got %q", tt.sig, rec)
+					}
+				default:
+					t.Errorf("Signal not received")
+				}
+			case <-ignSigCh:
+
 			}
 		})
 	}
