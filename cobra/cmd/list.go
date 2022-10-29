@@ -7,6 +7,7 @@ import (
 
 	"achristie.net/cobra/scan"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 var listCmd = &cobra.Command{
@@ -15,10 +16,7 @@ var listCmd = &cobra.Command{
 	Long:    `longish`,
 	Aliases: []string{"l"},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		hostsFile, err := cmd.Flags().GetString("hosts-file")
-		if err != nil {
-			return err
-		}
+		hostsFile := viper.GetString("hosts-file")
 
 		return listAction(os.Stdout, hostsFile, args)
 	},
