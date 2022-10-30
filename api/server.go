@@ -16,7 +16,7 @@ func newMux(todoFile string) http.Handler {
 	t := todoRouter(todoFile, mu)
 
 	m.Handle("/todo", http.StripPrefix("/todo", t))
-	// m.Handle("/todo", http.StripPrefix("/todo/", t))
+	m.Handle("/todo/", http.StripPrefix("/todo/", t))
 
 	return m
 }

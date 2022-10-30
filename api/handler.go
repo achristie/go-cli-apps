@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"sync"
@@ -37,7 +36,6 @@ func todoRouter(todoFile string, l sync.Locker) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		list := &todo.List{}
 
-		log.Print("here")
 		l.Lock()
 		defer l.Unlock()
 
@@ -55,12 +53,11 @@ func todoRouter(todoFile string, l sync.Locker) http.HandlerFunc {
 			default:
 				message := "Method not supported"
 				replyError(w, r, http.StatusMethodNotAllowed, message)
-				return
 			}
+			return
 		}
 
 		id, err := validateID(r.URL.Path, list)
-		fmt.Printf("hi - id: %d, err: %s", id, err)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				replyError(w, r, http.StatusNotFound, err.Error())
